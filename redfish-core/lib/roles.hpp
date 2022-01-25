@@ -28,17 +28,17 @@ inline std::string getRoleFromPrivileges(std::string_view priv)
     {
         return "Administrator";
     }
+    else if (priv == "priv-callback")
+    {
+        return "Callback";
+    }
     else if (priv == "priv-user")
     {
-        return "ReadOnly";
+        return "User";
     }
     else if (priv == "priv-operator")
     {
         return "Operator";
-    }
-    else if (priv == "priv-noaccess")
-    {
-        return "NoAccess";
     }
     return "";
 }
@@ -55,13 +55,13 @@ inline bool getAssignedPrivFromRole(std::string_view role,
     {
         privArray = {"Login", "ConfigureSelf", "ConfigureComponents"};
     }
-    else if (role == "ReadOnly")
+    else if (role == "User")
     {
         privArray = {"Login", "ConfigureSelf"};
     }
-    else if (role == "NoAccess")
+    else if (role == "Callback")
     {
-        privArray = nlohmann::json::array();
+        privArray = {"Login"};
     }
     else
     {
@@ -105,14 +105,13 @@ class Roles : public Node
         }
 
         res.jsonValue = {
-            {"@odata.type", "#Role.v1_2_2.Role"},
+            {"@odata.type", "#Role.v1_0_2.Role"},
             {"@odata.context", "/redfish/v1/$metadata#Role.Role"},
             {"Name", "User Role"},
             {"Description", roleId + " User Role"},
             {"OemPrivileges", nlohmann::json::array()},
             {"IsPredefined", true},
             {"Id", roleId},
-            {"RoleId", roleId},
             {"@odata.id", "/redfish/v1/AccountService/Roles/" + roleId},
             {"AssignedPrivileges", std::move(privArray)}};
         res.end();
@@ -160,11 +159,6 @@ class RoleCollection : public Node
                 memberArray = nlohmann::json::array();
                 const std::vector<std::string>* privList =
                     std::get_if<std::vector<std::string>>(&resp);
-                if (privList == nullptr)
-                {
-                    messages::internalError(asyncResp->res);
-                    return;
-                }
                 for (const std::string& priv : *privList)
                 {
                     std::string role = getRoleFromPrivileges(priv);

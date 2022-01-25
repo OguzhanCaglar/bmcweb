@@ -1,13 +1,11 @@
 #pragma once
 #include <boost/algorithm/string.hpp>
 
-#include "http_request.h"
-
 namespace http_helpers
 {
 inline bool requestPrefersHtml(const crow::Request& req)
 {
-    std::string_view header = req.getHeaderValue("accept");
+    boost::string_view header = req.getHeaderValue("accept");
     std::vector<std::string> encodings;
     // chrome currently sends 6 accepts headers, firefox sends 4.
     encodings.reserve(6);
@@ -27,7 +25,7 @@ inline bool requestPrefersHtml(const crow::Request& req)
     return false;
 }
 
-inline std::string urlEncode(const std::string_view value)
+inline std::string urlEncode(const boost::string_view value)
 {
     std::ostringstream escaped;
     escaped.fill('0');

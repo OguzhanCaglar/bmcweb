@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 */
-#include <logging.h>
+#include <crow/logging.h>
 
 #include <error_messages.hpp>
 
@@ -32,23 +32,27 @@ static void addMessageToErrorJson(nlohmann::json& target,
     // first error message to the top level struct
     if (!error.is_object())
     {
-        auto messageIdIterator = message.find("MessageId");
-        if (messageIdIterator == message.end())
+        auto message_id_iterator = message.find("MessageId");
+        if (message_id_iterator == message.end())
         {
             BMCWEB_LOG_CRITICAL
                 << "Attempt to add error message without MessageId";
             return;
         }
 
-        auto messageFieldIterator = message.find("Message");
-        if (messageFieldIterator == message.end())
+        auto message_field_iterator = message.find("Message");
+        if (message_field_iterator == message.end())
         {
             BMCWEB_LOG_CRITICAL
                 << "Attempt to add error message without Message";
             return;
         }
-        error = {{"code", *messageIdIterator},
-                 {"message", *messageFieldIterator}};
+        // clang-format off
+    error = {
+        {"code", *message_id_iterator},
+        {"message", *message_field_iterator}
+    };
+        // clang-format on
     }
     else
     {
@@ -61,13 +65,13 @@ static void addMessageToErrorJson(nlohmann::json& target,
     // This check could technically be done in in the default construction
     // branch above, but because we need the pointer to the extended info field
     // anyway, it's more efficient to do it here.
-    auto& extendedInfo = error[messages::messageAnnotation];
-    if (!extendedInfo.is_array())
+    auto& extended_info = error[messages::messageAnnotation];
+    if (!extended_info.is_array())
     {
-        extendedInfo = nlohmann::json::array();
+        extended_info = nlohmann::json::array();
     }
 
-    extendedInfo.push_back(message);
+    extended_info.push_back(message);
 }
 
 static void addMessageToJsonRoot(nlohmann::json& target,
@@ -251,7 +255,7 @@ void unrecognizedRequestBody(crow::Response& res)
 void resourceAtUriUnauthorized(crow::Response& res, const std::string& arg1,
                                const std::string& arg2)
 {
-    res.result(boost::beast::http::status::unauthorized);
+    res.result(boost::beast::http::status::forbidden);
     addMessageToErrorJson(
         res.jsonValue,
         nlohmann::json{
@@ -348,7 +352,6 @@ void propertyDuplicate(crow::Response& res, const std::string& arg1)
  */
 void serviceTemporarilyUnavailable(crow::Response& res, const std::string& arg1)
 {
-    res.addHeader("Retry-After", arg1);
     res.result(boost::beast::http::status::service_unavailable);
     addMessageToErrorJson(
         res.jsonValue,

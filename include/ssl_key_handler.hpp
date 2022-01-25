@@ -16,88 +16,11 @@
 
 namespace ensuressl
 {
-constexpr char const *trustStorePath = "/etc/ssl/certs/authority";
 static void initOpenssl();
+static void cleanupOpenssl();
+static EVP_PKEY *createRsaKey();
 static EVP_PKEY *createEcKey();
-
-// Trust chain related errors.`
-inline bool isTrustChainError(int errnum)
-{
-    if ((errnum == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) ||
-        (errnum == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN) ||
-        (errnum == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY) ||
-        (errnum == X509_V_ERR_CERT_UNTRUSTED) ||
-        (errnum == X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE))
-    {
-        return true;
-    }
-    else
-    {
-        return false;
-    }
-}
-
-inline bool validateCertificate(X509 *const cert)
-{
-    // Create an empty X509_STORE structure for certificate validation.
-    X509_STORE *x509Store = X509_STORE_new();
-    if (!x509Store)
-    {
-        BMCWEB_LOG_ERROR << "Error occured during X509_STORE_new call";
-        return false;
-    }
-
-    // Load Certificate file into the X509 structure.
-    X509_STORE_CTX *storeCtx = X509_STORE_CTX_new();
-    if (!storeCtx)
-    {
-        BMCWEB_LOG_ERROR << "Error occured during X509_STORE_CTX_new call";
-        X509_STORE_free(x509Store);
-        return false;
-    }
-
-    int errCode = X509_STORE_CTX_init(storeCtx, x509Store, cert, nullptr);
-    if (errCode != 1)
-    {
-        BMCWEB_LOG_ERROR << "Error occured during X509_STORE_CTX_init call";
-        X509_STORE_CTX_free(storeCtx);
-        X509_STORE_free(x509Store);
-        return false;
-    }
-
-    errCode = X509_verify_cert(storeCtx);
-    if (errCode == 1)
-    {
-        BMCWEB_LOG_INFO << "Certificate verification is success";
-        X509_STORE_CTX_free(storeCtx);
-        X509_STORE_free(x509Store);
-        return true;
-    }
-    if (errCode == 0)
-    {
-        errCode = X509_STORE_CTX_get_error(storeCtx);
-        X509_STORE_CTX_free(storeCtx);
-        X509_STORE_free(x509Store);
-        if (isTrustChainError(errCode))
-        {
-            BMCWEB_LOG_DEBUG << "Ignoring Trust Chain error. Reason: "
-                             << X509_verify_cert_error_string(errCode);
-            return true;
-        }
-        else
-        {
-            BMCWEB_LOG_ERROR << "Certificate verification failed. Reason: "
-                             << X509_verify_cert_error_string(errCode);
-            return false;
-        }
-    }
-
-    BMCWEB_LOG_ERROR
-        << "Error occured during X509_verify_cert call. ErrorCode: " << errCode;
-    X509_STORE_CTX_free(storeCtx);
-    X509_STORE_free(x509Store);
-    return false;
-}
+static void handleOpensslError();
 
 inline bool verifyOpensslKeyCert(const std::string &filepath)
 {
@@ -107,9 +30,10 @@ inline bool verifyOpensslKeyCert(const std::string &filepath)
     std::cout << "Checking certs in file " << filepath << "\n";
 
     FILE *file = fopen(filepath.c_str(), "r");
-    if (file != nullptr)
+    if (file != NULL)
     {
-        EVP_PKEY *pkey = PEM_read_PrivateKey(file, nullptr, nullptr, nullptr);
+        EVP_PKEY *pkey = PEM_read_PrivateKey(file, NULL, NULL, NULL);
+        int rc;
         if (pkey != nullptr)
         {
             RSA *rsa = EVP_PKEY_get1_RSA(pkey);
@@ -118,7 +42,7 @@ inline bool verifyOpensslKeyCert(const std::string &filepath)
                 std::cout << "Found an RSA key\n";
                 if (RSA_check_key(rsa) == 1)
                 {
-                    privateKeyValid = true;
+                    // private_key_valid = true;
                 }
                 else
                 {
@@ -148,13 +72,7 @@ inline bool verifyOpensslKeyCert(const std::string &filepath)
 
             if (privateKeyValid)
             {
-                // If the order is certificate followed by key in input file
-                // then, certificate read will fail. So, setting the file
-                // pointer to point beginning of file to avoid certificate and
-                // key order issue.
-                fseek(file, 0, SEEK_SET);
-
-                X509 *x509 = PEM_read_X509(file, nullptr, nullptr, nullptr);
+                X509 *x509 = PEM_read_X509(file, NULL, NULL, NULL);
                 if (x509 == nullptr)
                 {
                     std::cout << "error getting x509 cert " << ERR_get_error()
@@ -162,8 +80,16 @@ inline bool verifyOpensslKeyCert(const std::string &filepath)
                 }
                 else
                 {
-                    certValid = validateCertificate(x509);
-                    X509_free(x509);
+                    rc = X509_verify(x509, pkey);
+                    if (rc == 1)
+                    {
+                        certValid = true;
+                    }
+                    else
+                    {
+                        std::cerr << "Error in verifying private key signature "
+                                  << ERR_get_error() << "\n";
+                    }
                 }
             }
 
@@ -176,7 +102,7 @@ inline bool verifyOpensslKeyCert(const std::string &filepath)
 
 inline void generateSslCertificate(const std::string &filepath)
 {
-    FILE *pFile = nullptr;
+    FILE *pFile = NULL;
     std::cout << "Generating new keys\n";
     initOpenssl();
 
@@ -197,7 +123,7 @@ inline void generateSslCertificate(const std::string &filepath)
             // number If this is not random, regenerating certs throws broswer
             // errors
             std::random_device rd;
-            int serial = static_cast<int>(rd());
+            int serial = rd();
 
             ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
 
@@ -219,7 +145,8 @@ inline void generateSslCertificate(const std::string &filepath)
                 reinterpret_cast<const unsigned char *>("US"), -1, -1, 0);
             X509_NAME_add_entry_by_txt(
                 name, "O", MBSTRING_ASC,
-                reinterpret_cast<const unsigned char *>("OpenBMC"), -1, -1, 0);
+                reinterpret_cast<const unsigned char *>("Intel BMC"), -1, -1,
+                0);
             X509_NAME_add_entry_by_txt(
                 name, "CN", MBSTRING_ASC,
                 reinterpret_cast<const unsigned char *>("testhost"), -1, -1, 0);
@@ -233,27 +160,66 @@ inline void generateSslCertificate(const std::string &filepath)
 
             if (pFile != nullptr)
             {
-                PEM_write_PrivateKey(pFile, pRsaPrivKey, nullptr, nullptr, 0,
-                                     nullptr, nullptr);
+                PEM_write_PrivateKey(pFile, pRsaPrivKey, NULL, NULL, 0, 0,
+                                     NULL);
 
                 PEM_write_X509(pFile, x509);
                 fclose(pFile);
-                pFile = nullptr;
+                pFile = NULL;
             }
 
             X509_free(x509);
         }
 
         EVP_PKEY_free(pRsaPrivKey);
-        pRsaPrivKey = nullptr;
+        pRsaPrivKey = NULL;
     }
 
     // cleanup_openssl();
 }
 
+EVP_PKEY *createRsaKey()
+{
+    RSA *pRSA = NULL;
+#if OPENSSL_VERSION_NUMBER < 0x00908000L
+    pRSA = RSA_generate_key(2048, RSA_3, NULL, NULL);
+#else
+    RSA_generate_key_ex(pRSA, 2048, NULL, NULL);
+#endif
+
+    EVP_PKEY *pKey = EVP_PKEY_new();
+    if ((pRSA != nullptr) && (pKey != nullptr) &&
+        EVP_PKEY_assign_RSA(pKey, pRSA))
+    {
+        /* pKey owns pRSA from now */
+        if (RSA_check_key(pRSA) <= 0)
+        {
+            fprintf(stderr, "RSA_check_key failed.\n");
+            handleOpensslError();
+            EVP_PKEY_free(pKey);
+            pKey = NULL;
+        }
+    }
+    else
+    {
+        handleOpensslError();
+        if (pRSA != nullptr)
+        {
+            RSA_free(pRSA);
+            pRSA = NULL;
+        }
+        if (pKey != nullptr)
+        {
+            EVP_PKEY_free(pKey);
+            pKey = NULL;
+        }
+    }
+    return pKey;
+}
+
 EVP_PKEY *createEcKey()
 {
-    EVP_PKEY *pKey = nullptr;
+    EVP_PKEY *pKey = NULL;
     int eccgrp = 0;
     eccgrp = OBJ_txt2nid("prime256v1");
 
@@ -287,6 +253,20 @@ void initOpenssl()
 #endif
 }
 
+void cleanupOpenssl()
+{
+    CRYPTO_cleanup_all_ex_data();
+    ERR_free_strings();
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+    ERR_remove_thread_state(0);
+#endif
+    EVP_cleanup();
+}
+
+void handleOpensslError()
+{
+    ERR_print_errors_fp(stderr);
+}
 inline void ensureOpensslKeyPresentAndValid(const std::string &filepath)
 {
     bool pemFileValid = false;
@@ -300,38 +280,28 @@ inline void ensureOpensslKeyPresentAndValid(const std::string &filepath)
     }
 }
 
-inline std::shared_ptr<boost::asio::ssl::context>
-    getSslContext(const std::string &ssl_pem_file)
+inline boost::asio::ssl::context getSslContext(const std::string &ssl_pem_file)
 {
-    std::shared_ptr<boost::asio::ssl::context> mSslContext =
-        std::make_shared<boost::asio::ssl::context>(
-            boost::asio::ssl::context::tls_server);
-    mSslContext->set_options(boost::asio::ssl::context::default_workarounds |
-                             boost::asio::ssl::context::no_sslv2 |
-                             boost::asio::ssl::context::no_sslv3 |
-                             boost::asio::ssl::context::single_dh_use |
-                             boost::asio::ssl::context::no_tlsv1 |
-                             boost::asio::ssl::context::no_tlsv1_1);
+    boost::asio::ssl::context mSslContext{
+        boost::asio::ssl::context::tls_server};
+    mSslContext.set_options(boost::asio::ssl::context::default_workarounds |
+                            boost::asio::ssl::context::no_sslv2 |
+                            boost::asio::ssl::context::no_sslv3 |
+                            boost::asio::ssl::context::single_dh_use |
+                            boost::asio::ssl::context::no_tlsv1 |
+                            boost::asio::ssl::context::no_tlsv1_1);
 
-    // BIG WARNING: This needs to stay disabled, as there will always be
-    // unauthenticated endpoints
-    // mSslContext->set_verify_mode(boost::asio::ssl::verify_peer);
-
-    SSL_CTX_set_options(mSslContext->native_handle(), SSL_OP_NO_RENEGOTIATION);
-
-    BMCWEB_LOG_DEBUG << "Using default TrustStore location: " << trustStorePath;
-    mSslContext->add_verify_path(trustStorePath);
-
-    mSslContext->use_certificate_file(ssl_pem_file,
-                                      boost::asio::ssl::context::pem);
-    mSslContext->use_private_key_file(ssl_pem_file,
-                                      boost::asio::ssl::context::pem);
+    // m_ssl_context.set_verify_mode(boost::asio::ssl::verify_peer);
+    mSslContext.use_certificate_file(ssl_pem_file,
+                                     boost::asio::ssl::context::pem);
+    mSslContext.use_private_key_file(ssl_pem_file,
+                                     boost::asio::ssl::context::pem);
 
     // Set up EC curves to auto (boost asio doesn't have a method for this)
     // There is a pull request to add this.  Once this is included in an asio
     // drop, use the right way
     // http://stackoverflow.com/questions/18929049/boost-asio-with-ecdsa-certificate-issue
-    if (SSL_CTX_set_ecdh_auto(mSslContext->native_handle(), 1) != 1)
+    if (SSL_CTX_set_ecdh_auto(mSslContext.native_handle(), 1) != 1)
     {
         BMCWEB_LOG_ERROR << "Error setting tmp ecdh list\n";
     }
@@ -347,7 +317,7 @@ inline std::shared_ptr<boost::asio::ssl::context>
                                 "ECDHE-ECDSA-AES128-SHA256:"
                                 "ECDHE-RSA-AES128-SHA256";
 
-    if (SSL_CTX_set_cipher_list(mSslContext->native_handle(),
+    if (SSL_CTX_set_cipher_list(mSslContext.native_handle(),
                                 mozillaModern.c_str()) != 1)
     {
         BMCWEB_LOG_ERROR << "Error setting cipher list\n";

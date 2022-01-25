@@ -1,4 +1,4 @@
-#include <app.h>
+#include <crow/app.h>
 #include <systemd/sd-daemon.h>
 
 #include <boost/asio/io_context.hpp>
@@ -19,13 +19,8 @@
 #include <ssl_key_handler.hpp>
 #include <string>
 #include <token_authorization_middleware.hpp>
-#include <vm_websocket.hpp>
 #include <webassets.hpp>
 #include <webserver_common.hpp>
-
-#ifdef BMCWEB_ENABLE_VM_NBDPROXY
-#include <nbd_proxy.hpp>
-#endif
 
 constexpr int defaultPort = 18080;
 
@@ -60,11 +55,20 @@ void setupSocket(crow::Crow<Middlewares...>& app)
 
 int main(int argc, char** argv)
 {
-    crow::logger::setLogLevel(crow::LogLevel::Debug);
+    crow::logger::setLogLevel(crow::LogLevel::DEBUG);
 
     auto io = std::make_shared<boost::asio::io_context>();
     CrowApp app(io);
 
+#ifdef BMCWEB_ENABLE_SSL
+    std::string sslPemFile("server.pem");
+    std::cout << "Building SSL Context\n";
+
+    ensuressl::ensureOpensslKeyPresentAndValid(sslPemFile);
+    std::cout << "SSL Enabled\n";
+    auto sslContext = ensuressl::getSslContext(sslPemFile);
+    app.ssl(std::move(sslContext));
+#endif
     // Static assets need to be initialized before Authorization, because auth
     // needs to build the whitelist from the static routes
 
@@ -90,10 +94,6 @@ int main(int argc, char** argv)
     crow::obmc_console::requestRoutes(app);
 #endif
 
-#ifdef BMCWEB_ENABLE_VM_WEBSOCKET
-    crow::obmc_vm::requestRoutes(app);
-#endif
-
     crow::token_authorization::requestRoutes(app);
 
     BMCWEB_LOG_INFO << "bmcweb (" << __DATE__ << ": " << __TIME__ << ')';
@@ -101,11 +101,6 @@ int main(int argc, char** argv)
 
     crow::connections::systemBus =
         std::make_shared<sdbusplus::asio::connection>(*io);
-
-#ifdef BMCWEB_ENABLE_VM_NBDPROXY
-    crow::nbd_proxy::requestRoutes(app);
-#endif
-
     redfish::RedfishService redfish(app);
 
     app.run();

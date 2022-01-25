@@ -15,8 +15,8 @@
 */
 #pragma once
 
-#include <http_request.h>
-#include <http_response.h>
+#include <crow/http_request.h>
+#include <crow/http_response.h>
 
 #include <bitset>
 #include <error_messages.hpp>
@@ -79,17 +79,25 @@ template <typename Type>
 constexpr bool is_std_array_v = is_std_array<Type>::value;
 
 template <typename ToType, typename FromType>
-bool checkRange(const FromType& from, const std::string& key,
+bool checkRange(const FromType* from, const std::string& key,
                 nlohmann::json& jsonValue, crow::Response& res)
 {
-    if (from > std::numeric_limits<ToType>::max())
+    if (from == nullptr)
+    {
+        BMCWEB_LOG_DEBUG << "Value for key " << key
+                         << " was incorrect type: " << __PRETTY_FUNCTION__;
+        messages::propertyValueTypeError(res, jsonValue.dump(), key);
+        return false;
+    }
+
+    if (*from > std::numeric_limits<ToType>::max())
     {
         BMCWEB_LOG_DEBUG << "Value for key " << key
                          << " was greater than max: " << __PRETTY_FUNCTION__;
         messages::propertyValueNotInList(res, jsonValue.dump(), key);
         return false;
     }
-    if (from < std::numeric_limits<ToType>::lowest())
+    if (*from < std::numeric_limits<ToType>::lowest())
     {
         BMCWEB_LOG_DEBUG << "Value for key " << key
                          << " was less than min: " << __PRETTY_FUNCTION__;
@@ -98,7 +106,7 @@ bool checkRange(const FromType& from, const std::string& key,
     }
     if constexpr (std::is_floating_point_v<ToType>)
     {
-        if (std::isnan(from))
+        if (std::isnan(*from))
         {
             BMCWEB_LOG_DEBUG << "Value for key " << key << " was NAN";
             messages::propertyValueNotInList(res, jsonValue.dump(), key);
@@ -110,11 +118,9 @@ bool checkRange(const FromType& from, const std::string& key,
 }
 
 template <typename Type>
-bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
+void unpackValue(nlohmann::json& jsonValue, const std::string& key,
                  crow::Response& res, Type& value)
 {
-    bool ret = true;
-
     if constexpr (std::is_floating_point_v<Type>)
     {
         double helper = 0;
@@ -129,14 +135,9 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
                 jsonPtr = &helper;
             }
         }
-        if (jsonPtr == nullptr)
+        if (!checkRange<Type>(jsonPtr, key, jsonValue, res))
         {
-            messages::propertyValueTypeError(res, jsonValue.dump(), key);
-            return false;
-        }
-        if (!checkRange<Type>(*jsonPtr, key, jsonValue, res))
-        {
-            return false;
+            return;
         }
         value = static_cast<Type>(*jsonPtr);
     }
@@ -144,14 +145,9 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
     else if constexpr (std::is_signed_v<Type>)
     {
         int64_t* jsonPtr = jsonValue.get_ptr<int64_t*>();
-        if (jsonPtr == nullptr)
+        if (!checkRange<Type>(jsonPtr, key, jsonValue, res))
         {
-            messages::propertyValueTypeError(res, jsonValue.dump(), key);
-            return false;
-        }
-        if (!checkRange<Type>(*jsonPtr, key, jsonValue, res))
-        {
-            return false;
+            return;
         }
         value = static_cast<Type>(*jsonPtr);
     }
@@ -160,14 +156,9 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
                            !std::is_same_v<bool, Type>))
     {
         uint64_t* jsonPtr = jsonValue.get_ptr<uint64_t*>();
-        if (jsonPtr == nullptr)
+        if (!checkRange<Type>(jsonPtr, key, jsonValue, res))
         {
-            messages::propertyValueTypeError(res, jsonValue.dump(), key);
-            return false;
-        }
-        if (!checkRange<Type>(*jsonPtr, key, jsonValue, res))
-        {
-            return false;
+            return;
         }
         value = static_cast<Type>(*jsonPtr);
     }
@@ -175,19 +166,16 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
     else if constexpr (is_optional_v<Type>)
     {
         value.emplace();
-        ret = unpackValue<typename Type::value_type>(jsonValue, key, res,
-                                                     *value) &&
-              ret;
+        unpackValue<typename Type::value_type>(jsonValue, key, res, *value);
     }
     else if constexpr (std::is_same_v<nlohmann::json, Type>)
     {
         // Must be a complex type.  Simple types (int string etc) should be
         // unpacked directly
-        if (!jsonValue.is_object() && !jsonValue.is_array() &&
-            !jsonValue.is_null())
+        if (!jsonValue.is_object() && !jsonValue.is_array())
         {
             messages::propertyValueTypeError(res, jsonValue.dump(), key);
-            return false;
+            return;
         }
 
         value = std::move(jsonValue);
@@ -197,19 +185,18 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
         if (!jsonValue.is_array())
         {
             messages::propertyValueTypeError(res, res.jsonValue.dump(), key);
-            return false;
+            return;
         }
         if (jsonValue.size() != value.size())
         {
             messages::propertyValueTypeError(res, res.jsonValue.dump(), key);
-            return false;
+            return;
         }
         size_t index = 0;
         for (const auto& val : jsonValue.items())
         {
-            ret = unpackValue<typename Type::value_type>(val.value(), key, res,
-                                                         value[index++]) &&
-                  ret;
+            unpackValue<typename Type::value_type>(val.value(), key, res,
+                                                   value[index++]);
         }
     }
     else if constexpr (is_vector_v<Type>)
@@ -217,15 +204,14 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
         if (!jsonValue.is_array())
         {
             messages::propertyValueTypeError(res, res.jsonValue.dump(), key);
-            return false;
+            return;
         }
 
         for (const auto& val : jsonValue.items())
         {
             value.emplace_back();
-            ret = unpackValue<typename Type::value_type>(val.value(), key, res,
-                                                         value.back()) &&
-                  ret;
+            unpackValue<typename Type::value_type>(val.value(), key, res,
+                                                   value.back());
         }
     }
     else
@@ -238,61 +224,53 @@ bool unpackValue(nlohmann::json& jsonValue, const std::string& key,
                 << "Value for key " << key
                 << " was incorrect type: " << jsonValue.type_name();
             messages::propertyValueTypeError(res, jsonValue.dump(), key);
-            return false;
+            return;
         }
         value = std::move(*jsonPtr);
     }
-    return ret;
 }
 
 template <size_t Count, size_t Index>
-bool readJsonValues(const std::string& key, nlohmann::json& jsonValue,
+void readJsonValues(const std::string& key, nlohmann::json& jsonValue,
                     crow::Response& res, std::bitset<Count>& handled)
 {
     BMCWEB_LOG_DEBUG << "Unable to find variable for key" << key;
     messages::propertyUnknown(res, key);
-    return false;
 }
 
 template <size_t Count, size_t Index, typename ValueType,
           typename... UnpackTypes>
-bool readJsonValues(const std::string& key, nlohmann::json& jsonValue,
+void readJsonValues(const std::string& key, nlohmann::json& jsonValue,
                     crow::Response& res, std::bitset<Count>& handled,
                     const char* keyToCheck, ValueType& valueToFill,
                     UnpackTypes&... in)
 {
-    bool ret = true;
     if (key != keyToCheck)
     {
-        ret = readJsonValues<Count, Index + 1>(key, jsonValue, res, handled,
-                                               in...) &&
-              ret;
-        return ret;
+        readJsonValues<Count, Index + 1>(key, jsonValue, res, handled, in...);
+        return;
     }
 
     handled.set(Index);
 
-    return unpackValue<ValueType>(jsonValue, key, res, valueToFill) && ret;
+    unpackValue<ValueType>(jsonValue, key, res, valueToFill);
 }
 
 template <size_t Index = 0, size_t Count>
-bool handleMissing(std::bitset<Count>& handled, crow::Response& res)
+void handleMissing(std::bitset<Count>& handled, crow::Response& res)
 {
-    return true;
 }
 
 template <size_t Index = 0, size_t Count, typename ValueType,
           typename... UnpackTypes>
-bool handleMissing(std::bitset<Count>& handled, crow::Response& res,
+void handleMissing(std::bitset<Count>& handled, crow::Response& res,
                    const char* key, ValueType& unused, UnpackTypes&... in)
 {
-    bool ret = true;
     if (!handled.test(Index) && !is_optional_v<ValueType>)
     {
-        ret = false;
         messages::propertyMissing(res, key);
     }
-    return details::handleMissing<Index + 1, Count>(handled, res, in...) && ret;
+    details::handleMissing<Index + 1, Count>(handled, res, in...);
 }
 } // namespace details
 
@@ -300,7 +278,6 @@ template <typename... UnpackTypes>
 bool readJson(nlohmann::json& jsonRequest, crow::Response& res, const char* key,
               UnpackTypes&... in)
 {
-    bool result = true;
     if (!jsonRequest.is_object())
     {
         BMCWEB_LOG_DEBUG << "Json value is not an object";
@@ -318,15 +295,13 @@ bool readJson(nlohmann::json& jsonRequest, crow::Response& res, const char* key,
     std::bitset<(sizeof...(in) + 1) / 2> handled(0);
     for (const auto& item : jsonRequest.items())
     {
-        result =
-            details::readJsonValues<(sizeof...(in) + 1) / 2, 0, UnpackTypes...>(
-                item.key(), item.value(), res, handled, key, in...) &&
-            result;
+        details::readJsonValues<(sizeof...(in) + 1) / 2, 0, UnpackTypes...>(
+            item.key(), item.value(), res, handled, key, in...);
     }
 
-    BMCWEB_LOG_DEBUG << "JSON result is: " << result;
+    details::handleMissing(handled, res, key, in...);
 
-    return details::handleMissing(handled, res, key, in...) && result;
+    return res.result() == boost::beast::http::status::ok;
 }
 
 template <typename... UnpackTypes>
